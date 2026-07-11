@@ -1,0 +1,141 @@
+#!/usr/bin/env bash
+# codeshape — score the current health of a codebase (local working tree).
+# Usage: codeshape [path] [--since N] [--files] [--json|--csv]
+set -euo pipefail
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "$HERE/lib/_common.sh"
+source "$HERE/lib/config.sh"
+source "$HERE/lib/scorer.sh"
+source "$HERE/lib/adapters.sh"
+
+usage() { cat <<EOF
+Usage: codeshape [path] [--since N] [--files] [--json|--csv]
+  path       subdirectory to scope the scan to (default: repo root)
+  --since N  churn lookback window in days (default: 90)
+  --files    list per-file scores (worst first) instead of the KPI summary
+  --json     machine-readable envelope
+  --csv      per-file CSV
+Requires: git, jq, and at least one of: scc, lizard, radon, gocyclo
+EOF
+}
+
+JSON=false; CSV=false; FILES=false; SINCE=90; SCOPE=""
+need_value() { [[ $# -ge 2 ]] || { echo "Error: $1 requires a value" >&2; exit 1; }; }
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    -h|--help) usage; exit 0 ;;
+    --json) JSON=true ;;
+    --csv)  CSV=true ;;
+    --files) FILES=true ;;
+    --since)   need_value "$@"; SINCE="$2"; shift ;;
+    --since=*) SINCE="${1#*=}" ;;
+    *) SCOPE="$1" ;;
+  esac
+  shift
+done
+
+[[ "$JSON" == "true" ]] && json_preflight_local
+require_git_repo || { usage >&2; exit 1; }
+resolve_local_repo
+load_config
+
+if ! [[ "$SINCE" =~ ^[0-9]+$ ]]; then
+  [[ "$JSON" == "true" ]] && json_error BAD_ARGS "--since must be a non-negative integer"
+  echo "Error: --since must be a non-negative integer" >&2; exit 1
+fi
+
+if [[ -z "$(adapter_available)" ]]; then
+  [[ "$JSON" == "true" ]] && json_error DEP_MISSING "no analyzer found; install one of: scc, lizard, radon, gocyclo"
+  echo "Error: no analyzer found (install scc, lizard, radon, or gocyclo)" >&2; exit 1
+fi
+
+# Churn: commits per path in the window (same idiom as engleader hotspots.sh).
+declare -A churn
+while IFS=$'\t' read -r c p; do [[ -n "$p" ]] && churn["$p"]="$c"; done < <(
+  git -C "$ROOT" log --since="${SINCE} days ago" --pretty=format: --name-only 2>/dev/null \
+    | awk '$0!=""{n[$0]++} END{for(k in n) print n[k]"\t"k}' || true)
+
+# Score each tracked file; collect scored records + coverage.
+scored="";   scored_n=0; skipped_n=0; total_n=0
+declare -A skip_langs
+while IFS= read -r rel; do
+  [[ -n "$rel" ]] || continue
+  [[ -n "$SCOPE" && "$rel" != "$SCOPE"* ]] && continue
+  total_n=$((total_n+1))
+  abs="$ROOT/$rel"
+  [[ -f "$abs" ]] || { skipped_n=$((skipped_n+1)); continue; }
+  rec="$(analyze_file "$abs" "$rel" 2>/dev/null)" || {
+    skipped_n=$((skipped_n+1))
+    ext="${rel##*.}"; skip_langs["$ext"]=1
+    continue
+  }
+  # worst-offending-function rollup
+  read -r ccn len args nest loc <<<"$(printf '%s' "$rec" | jq -r '
+    . as $r | ([$r.fns[].ccn]|max) as $c | ([$r.fns[].len]|max) as $l |
+    ([$r.fns[].args]|max) as $a | ([$r.fns[].nesting]|max) as $n |
+    "\($c) \($l) \($a) \($n) \($r.loc)"')"
+  dup="$(printf '%s' "$rec" | jq -r '.dup_ratio')"
+  s="$(score_record "$ccn" "$len" "$args" "$nest" "$dup")"
+  cc="${churn[$rel]:-0}"
+  scored+="${s}	${loc}	${cc}	${rel}"$'\n'
+  scored_n=$((scored_n+1))
+done < <(git -C "$ROOT" ls-files)
+
+scored="$(printf '%s' "$scored" | grep -v '^$' || true)"
+
+# Build files JSON (sorted worst-first) once; reuse for every output mode.
+files_json="$(printf '%s\n' "$scored" | sort -t$'\t' -k1,1n | jq -R -s \
+  --argjson g "$TIER_GREEN" --argjson y "$TIER_YELLOW" '
+  [ split("\n")[] | select(length>0) | split("\t")
+    | { score:(.[0]|tonumber), loc:(.[1]|tonumber),
+        change_count:(.[2]|tonumber), path:.[3] }
+    | .tier = (if .score >= $g then "green" elif .score >= $y then "yellow" else "red" end) ]')"
+
+skip_langs_json="$(printf '%s\n' "${!skip_langs[@]}" | jq -R -s 'split("\n")|map(select(length>0))')"
+
+data="$(jq -n --argjson files "$files_json" --argjson cf "$CHURN_FLOOR" \
+  --argjson scored "$scored_n" --argjson skipped "$skipped_n" --argjson total "$total_n" \
+  --argjson skiplangs "$skip_langs_json" '
+  ($files | map(select(.loc>0))) as $f
+  | ($f | map(.loc) | add // 0) as $totloc
+  | ($f | map(select(.change_count >= $cf))) as $hot
+  | ($hot | map(.loc) | add // 0) as $hotloc
+  | {
+      hotspot_health: (if ($hot|length)>0 and $hotloc>0
+        then (($hot | map(.score*.loc) | add) / $hotloc) else null end),
+      average_health: (if ($f|length)>0 and $totloc>0
+        then (($f | map(.score*.loc) | add) / $totloc) else null end),
+      worst: ($f | min_by(.score) | if . == null then null else {path,score} end),
+      tiers: { green:($f|map(select(.tier=="green"))|length),
+               yellow:($f|map(select(.tier=="yellow"))|length),
+               red:($f|map(select(.tier=="red"))|length) },
+      coverage: { scored:$scored, skipped:$skipped, total:$total, skipped_languages:$skiplangs },
+      files: $files
+    }
+  | .hotspot_health = (if .hotspot_health==null then null else (.hotspot_health*10|round/10) end)
+  | .average_health = (if .average_health==null then null else (.average_health*10|round/10) end)')"
+
+if [[ "$JSON" == "true" ]]; then emit_json "codeshape" "$SINCE" "$data"; exit 0; fi
+
+if [[ "$CSV" == "true" ]]; then
+  echo "File,Score,LoC,Changes,Tier"
+  printf '%s' "$data" | jq -r '.files[] | [.path,.score,.loc,.change_count,.tier] | @csv'
+  exit 0
+fi
+
+if [[ "$FILES" == "true" ]]; then
+  printf '%s' "$data" | jq -r '.files[] | "\(.score)  \(.tier|ascii_upcase[0:1])  \(.path)"'
+  exit 0
+fi
+
+# Default: KPI summary.
+printf '%s' "$data" | jq -r '
+  (.coverage.skipped_languages | join(", ")) as $skiplangs |
+  (if .worst then "\(.worst.score)  \(.worst.path)" else "n/a" end) as $worst |
+  "Code Health — \(.coverage.scored) of \(.coverage.total) files scored",
+  "──────────────────────────────────────────",
+  "  Hotspot Health : \(.hotspot_health // "n/a")",
+  "  Average Health : \(.average_health // "n/a")",
+  "  Worst          : \($worst)",
+  "  Green/Yellow/Red: \(.tiers.green) / \(.tiers.yellow) / \(.tiers.red)",
+  (if (.coverage.skipped>0) then "  Skipped        : \(.coverage.skipped) files (\($skiplangs))" else empty end)'
