@@ -27,4 +27,24 @@ else
 fi
 ok "adapter_available lists something or is empty" 'adapter_available >/dev/null 2>&1 || true; true'
 
+if command -v lizard >/dev/null 2>&1; then
+  TMP2="$(mktemp -d)"
+  cat > "$TMP2/f.py" <<'PY'
+def big(a, b, c, d, e):
+    if a:
+        if b:
+            for i in range(c):
+                if d and e:
+                    return i
+    return 0
+PY
+  rec="$(analyze_file "$TMP2/f.py" "f.py")"
+  ok "lizard record is valid JSON"           'printf "%s" "$rec" | jq -e . >/dev/null 2>&1'
+  ok "lizard captures the 5-arg function"    'printf "%s" "$rec" | jq -e "[.fns[].args] | max == 5" >/dev/null'
+  ok "lizard ccn reflects branching (>1)"    'printf "%s" "$rec" | jq -e "[.fns[].ccn] | max > 1" >/dev/null'
+  rm -rf "$TMP2"
+else
+  skip "lizard not installed — per-function enrichment tests skipped"
+fi
+
 echo; echo "PASS=$PASS FAIL=$FAIL"; [[ "$FAIL" -eq 0 ]]
