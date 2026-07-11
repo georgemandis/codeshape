@@ -18,4 +18,14 @@ eval "$(bash -c 'source "'"$DIR"'/lib/config.sh"; ROOT="'"$OV"'" load_config; ec
 ok ".codeshaperc overrides T_CCN" '[[ "$T_CCN" == "25" ]]'
 rm -rf "$OV"
 
+# A malformed .codeshaperc (with command substitution) must NOT be sourced
+# and must NOT execute arbitrary code.
+OV2="$(mktemp -d)"; SENTINEL="$OV2/PWNED"
+printf 'T_CCN=$(touch %s)\n' "$SENTINEL" > "$OV2/.codeshaperc"
+rm -f "$SENTINEL"  # Ensure sentinel doesn't exist before test
+eval "$(bash -c 'source "'"$DIR"'/lib/config.sh"; ROOT="'"$OV2"'" load_config; echo T_CCN=$T_CCN')"
+ok "malformed .codeshaperc not applied (T_CCN remains default)" '[[ "$T_CCN" == "10" ]]'
+ok "malformed .codeshaperc did not execute (PWNED file not created)" '[[ ! -f "$SENTINEL" ]]'
+rm -rf "$OV2"
+
 echo; echo "PASS=$PASS FAIL=$FAIL"; [[ "$FAIL" -eq 0 ]]
