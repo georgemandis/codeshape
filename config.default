@@ -1,0 +1,16 @@
+# Thresholds (a metric is penalized only ABOVE these).
+T_CCN=10
+T_LEN=60
+T_ARGS=4
+T_NEST=3
+# Penalty weights (points deducted per unit of overage; dup is per ratio-point).
+W_CCN=0.30
+W_LEN=0.03
+W_ARGS=0.50
+W_NEST=1.00
+W_DUP=5.00
+# Score→tier cutoffs.
+TIER_GREEN=8
+TIER_YELLOW=5
+# Minimum change count for a file to count toward Hotspot Health.
+CHURN_FLOOR=3
