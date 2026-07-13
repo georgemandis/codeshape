@@ -66,7 +66,7 @@ while IFS= read -r rel; do
   [[ -f "$abs" ]] || { skipped_n=$((skipped_n+1)); continue; }
   rec="$(analyze_file "$abs" "$rel" 2>/dev/null)" || {
     skipped_n=$((skipped_n+1))
-    ext="${rel##*.}"; skip_langs["$ext"]=1
+    bn="${rel##*/}"; ext="${bn##*.}"; skip_langs["$ext"]=1
     continue
   }
   # worst-offending-function rollup
@@ -74,6 +74,11 @@ while IFS= read -r rel; do
     . as $r | ([$r.fns[].ccn]|max) as $c | ([$r.fns[].len]|max) as $l |
     ([$r.fns[].args]|max) as $a | ([$r.fns[].nesting]|max) as $n |
     "\($c) \($l) \($a) \($n) \($r.loc)"')"
+  if [[ -z "$loc" || "$loc" -eq 0 ]]; then
+    skipped_n=$((skipped_n+1))
+    bn="${rel##*/}"; ext="${bn##*.}"; skip_langs["$ext"]=1
+    continue
+  fi
   dup="$(printf '%s' "$rec" | jq -r '.dup_ratio')"
   s="$(score_record "$ccn" "$len" "$args" "$nest" "$dup")"
   cc="${churn[$rel]:-0}"

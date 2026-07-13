@@ -30,4 +30,27 @@ else
 fi
 rm -rf "$REPO"
 
+# Envelope self-reconciliation: coverage/tiers/files must agree even when the
+# tree contains a zero-LoC file (regression for the extension-leak + zero-LoC
+# scored-file bugs).
+if [[ -n "$(bash -c 'source "'"$DIR"'/lib/adapters.sh"; adapter_available')" ]]; then
+  RECON="$(mktemp -d)"
+  ( cd "$RECON" && git init -q && git config user.email t@t.co && git config user.name t \
+    && printf 'def add(a, b):\n    return a + b\n\ndef sub(a, b):\n    return a - b\n' > main.py \
+    && touch empty.py \
+    && git add -A && git commit -qm init )
+  recon="$(cd "$RECON" && "$DIR/codeshape" --json 2>/dev/null)"
+  ok "reconcile: coverage.scored+skipped == total" \
+    '[[ "$(printf "%s" "$recon" | jq -r "(.data.coverage.scored + .data.coverage.skipped) == .data.coverage.total")" == "true" ]]'
+  ok "reconcile: tiers sum == coverage.scored" \
+    '[[ "$(printf "%s" "$recon" | jq -r "(.data.tiers.green + .data.tiers.yellow + .data.tiers.red) == .data.coverage.scored")" == "true" ]]'
+  ok "reconcile: files length == coverage.scored" \
+    '[[ "$(printf "%s" "$recon" | jq -r "(.data.files | length) == .data.coverage.scored")" == "true" ]]'
+  ok "reconcile: no skipped_languages entry contains a slash" \
+    '[[ "$(printf "%s" "$recon" | jq -r "[.data.coverage.skipped_languages[] | select(contains(\"/\"))] | length == 0")" == "true" ]]'
+  rm -rf "$RECON"
+else
+  echo "skip - no adapter installed; reconciliation assertions skipped"
+fi
+
 echo; echo "PASS=$PASS FAIL=$FAIL"; [[ "$FAIL" -eq 0 ]]
