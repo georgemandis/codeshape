@@ -1,5 +1,8 @@
 # codeshape
 
+![shell](https://img.shields.io/badge/shell-bash-4EAA25?logo=gnubash&logoColor=white)
+![code health](https://img.shields.io/badge/code%20health-9.6-brightgreen)
+
 `codeshape` is a standalone, local-first bash CLI that scores the current
 health of a codebase. Inspired by CodeScene's "hotspot" idea, it combines a
 per-file complexity score (cyclomatic complexity, function length, argument
@@ -72,6 +75,40 @@ $ codeshape --since 180 --json
 
 See [`docs/json-contract.md`](docs/json-contract.md) for the full field
 reference, including the error envelope.
+
+## Continuous integration
+
+`codeshape --json` is designed to be gated in CI. Because every failure path
+emits a JSON `{error, code}` envelope on stdout, you can parse the result and
+fail the build when the codebase's average health slips below a floor.
+
+```yaml
+# .github/workflows/code-health.yml
+name: code-health
+on: [push, pull_request]
+
+jobs:
+  codeshape:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0          # codeshape needs history for churn
+      - name: Install analyzers
+        run: |
+          go install github.com/boyter/scc/v3@latest
+          pipx install lizard
+      - name: Run codeshape
+        run: |
+          score=$(./codeshape --json | jq -r '.data.average_health // 0')
+          echo "Average health: $score"
+          awk -v s="$score" 'BEGIN { exit (s < 6.0) }' \
+            || { echo "::error::Average health $score is below the 6.0 floor"; exit 1; }
+```
+
+Adjust the `6.0` floor to taste, or gate on `.data.hotspot_health` (the
+frequently-changed files) or `.data.worst.score` (the single worst file)
+instead — see the [JSON contract](docs/json-contract.md) for all fields.
 
 ## Configuration
 
