@@ -1,7 +1,8 @@
 # codeshape
 
 ![shell](https://img.shields.io/badge/shell-bash-4EAA25?logo=gnubash&logoColor=white)
-![code health](https://img.shields.io/badge/code%20health-9.6-brightgreen)
+![code health](https://img.shields.io/endpoint?url=https://gist.githubusercontent.com/georgemandis/d0fe45659b9ea460cd4e74b3629e10e7/raw/cs_badge.json)
+![license](https://img.shields.io/badge/license-MIT-blue)
 
 `codeshape` is a standalone, local-first bash CLI that scores the current
 health of a codebase. Inspired by CodeScene's "hotspot" idea, it combines a

@@ -1,0 +1,53 @@
+name: code-health
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  codeshape:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0            # codeshape needs full history for churn
+
+      - name: Install analyzers
+        run: |
+          go install github.com/boyter/scc/v3@latest
+          echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
+          pipx install lizard
+
+      - name: Run codeshape
+        id: score
+        run: |
+          score=$(./codeshape --json | jq -r '.data.average_health // 0')
+          echo "Average health: $score"
+          echo "score=$score" >> "$GITHUB_OUTPUT"
+
+      - name: Gate on health floor
+        run: |
+          awk -v s="${{ steps.score.outputs.score }}" 'BEGIN { exit (s < 6.0) }' \
+            || { echo "::error::Average health ${{ steps.score.outputs.score }} is below the 6.0 floor"; exit 1; }
+
+      # Publish the live README badge — only on pushes to main, and only if a
+      # GIST_TOKEN secret is configured (a PAT with the `gist` scope).
+      - name: Update badge gist
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main' && env.GIST_TOKEN != ''
+        env:
+          GIST_TOKEN: ${{ secrets.GIST_TOKEN }}
+          GIST_ID: d0fe45659b9ea460cd4e74b3629e10e7
+          SCORE: ${{ steps.score.outputs.score }}
+        run: |
+          color=$(awk -v s="$SCORE" 'BEGIN{ if(s>=8)print"brightgreen"; else if(s>=5)print"yellow"; else print"red" }')
+          payload=$(jq -n --arg m "$SCORE" --arg c "$color" \
+            '{schemaVersion:1, label:"code health", message:$m, color:$c}')
+          # Shields reads cs_badge.json from the gist; update it in place.
+          jq -n --arg content "$payload" '{files: {"cs_badge.json": {content: $content}}}' \
+            | curl -sS -X PATCH \
+                -H "Authorization: token $GIST_TOKEN" \
+                -H "Accept: application/vnd.github+json" \
+                "https://api.github.com/gists/$GIST_ID" \
+                -d @- > /dev/null
+          echo "Badge gist updated to $SCORE ($color)"
